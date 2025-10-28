@@ -158,22 +158,58 @@ main(void)
 
   // Read and run input commands.
   while(getcmd(buf, sizeof(buf)) >= 0){
-    char *cmd = buf;
-    while (*cmd == ' ' || *cmd == '\t')
-      cmd++;
-    if (*cmd == '\n') // is a blank command
-      continue;
-    if(cmd[0] == 'c' && cmd[1] == 'd' && cmd[2] == ' '){
-      // Chdir must be called by the parent, not the child.
-      cmd[strlen(cmd)-1] = 0;  // chop \n
-      if(chdir(cmd+3) < 0)
-        fprintf(2, "cannot cd %s\n", cmd+3);
+  char *p = buf;
+  char *cmd;
+  int bg_count = 0;
+
+  while(*p){
+    while(*p == ' ')
+      p++;
+    if(*p == 0)
+      break;
+
+    cmd = p;
+    while(*p && *p != '&')
+      p++;
+
+    if(*p == '&'){
+      *p = 0;
+      p++;
+      if(fork1() == 0)
+        runcmd(parsecmd(cmd));
+      bg_count++;
     } else {
       if(fork1() == 0)
         runcmd(parsecmd(cmd));
-      wait(0);
+      else
+        wait(0);
+      break;
     }
   }
+
+  // Wait for all background processes to finish
+  for(int i = 0; i < bg_count; i++)
+    wait(0);
+}
+
+  // while(getcmd(buf, sizeof(buf)) >= 0){
+  //   char *cmd = buf;
+  //   while (*cmd == ' ' || *cmd == '\t')
+  //     cmd++;
+  //   if (*cmd == '\n') // is a blank command
+  //     continue;
+  //   if(cmd[0] == 'c' && cmd[1] == 'd' && cmd[2] == ' '){
+  //     // Chdir must be called by the parent, not the child.
+  //     cmd[strlen(cmd)-1] = 0;  // chop \n
+  //     if(chdir(cmd+3) < 0)
+  //       fprintf(2, "cannot cd %s\n", cmd+3);
+  //   } else {
+  //     if(fork1() == 0)
+  //       // runcmd(parsecmd(cmd));
+  //       runcmd(parsecmd(buf));
+  //     wait(0);
+  //   }
+  // }
   exit(0);
 }
 

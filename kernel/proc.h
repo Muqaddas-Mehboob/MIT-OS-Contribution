@@ -85,13 +85,22 @@ enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 struct proc {
   struct spinlock lock;
 
+  //for implementation of MLFQ
+  int queueLevel;        // Current queue (0 = high priority)
+  int timeSliceUsed;     // Used time in current queue
+  int waitingTime;       // Used for aging
+  int lastQueueLevel;   // for printing only when queue changes
+  int lastStartTick;     // tick when this process was switched in
+  int lastLoggedQueue;   // last queue printed (optional)
+
+
   // p->lock must be held when using these:
   enum procstate state;        // Process state
   void *chan;                  // If non-zero, sleeping on chan
   int killed;                  // If non-zero, have been killed
   int xstate;                  // Exit status to be returned to parent's wait
   int pid;                     // Process ID
-
+  int cputime;
   // wait_lock must be held when using this:
   struct proc *parent;         // Parent process
 

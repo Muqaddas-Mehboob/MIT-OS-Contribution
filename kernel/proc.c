@@ -6,6 +6,19 @@
 #include "proc.h"
 #include "defs.h"
 
+
+//for the implementation of MLFQ
+#define NQUEUES 3
+int TIME_SLICE[NQUEUES] = {1, 2, 4};
+
+#define AGING_THRESHOLD 50
+
+#define TIME_SLICE_0 4
+#define TIME_SLICE_1 8
+#define TIME_SLICE_2 16
+#define AGING_LIMIT 30  // Move process up after waiting too long
+
+
 struct cpu cpus[NCPU];
 
 struct proc proc[NPROC];
@@ -111,6 +124,7 @@ allocproc(void)
 {
   struct proc *p;
 
+  // Search for an UNUSED process slot
   for(p = proc; p < &proc[NPROC]; p++) {
     acquire(&p->lock);
     if(p->state == UNUSED) {
@@ -125,14 +139,23 @@ found:
   p->pid = allocpid();
   p->state = USED;
 
-  // Allocate a trapframe page.
+  // Initialize your new MLFQ fields here (AFTER p is valid)
+  p->queueLevel = 0;
+  p->timeSliceUsed = 0;
+  p->waitingTime = 0;
+  p->lastQueueLevel = -1;
+  p->lastStartTick = -1;
+  p->lastLoggedQueue = -1;
+
+
+  // Allocate a trapframe page
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
     freeproc(p);
     release(&p->lock);
     return 0;
   }
 
-  // An empty user page table.
+  // An empty user page table
   p->pagetable = proc_pagetable(p);
   if(p->pagetable == 0){
     freeproc(p);
@@ -140,14 +163,14 @@ found:
     return 0;
   }
 
-  // Set up new context to start executing at forkret,
-  // which returns to user space.
+  // Set up new context to start executing at forkret
   memset(&p->context, 0, sizeof(p->context));
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
 
   return p;
 }
+
 
 // free a proc structure and the data hanging from it,
 // including user pages.
@@ -418,46 +441,157 @@ kwait(uint64 addr)
 //  - swtch to start running that process.
 //  - eventually that process transfers control
 //    via swtch back to the scheduler.
+
+//ROUND ROBIN SCHEDULAR (DEFAULT)
+// void
+// scheduler(void)
+// {
+//   struct proc *p;
+//   struct cpu *c = mycpu();
+
+//   c->proc = 0;
+//   for(;;){
+//     // The most recent process to run may have had interrupts
+//     // turned off; enable them to avoid a deadlock if all
+//     // processes are waiting. Then turn them back off
+//     // to avoid a possible race between an interrupt
+//     // and wfi.
+//     intr_on();
+//     intr_off();
+
+//     int found = 0;
+//     for(p = proc; p < &proc[NPROC]; p++) {
+//       acquire(&p->lock);
+//       if(p->state == RUNNABLE) {
+//         // Switch to chosen process.  It is the process's job
+//         // to release its lock and then reacquire it
+//         // before jumping back to us.
+//         p->state = RUNNING;
+//         c->proc = p;
+//         swtch(&c->context, &p->context);
+
+//         // Process is done running for now.
+//         // It should have changed its p->state before coming back.
+//         c->proc = 0;
+//         found = 1;
+//       }
+//       release(&p->lock);
+//     }
+//     if(found == 0) {
+//       // nothing to run; stop running on this core until an interrupt.
+//       asm volatile("wfi");
+//     }
+//   }
+// }
+
+
+//IMPLEMENTATION OF MLFQ
+
+// void
+// scheduler(void)
+// {
+//   struct cpu *c = mycpu();
+//   struct proc *p;
+
+//   for(;;){
+//     // Enable interrupts on this processor
+//     intr_on();
+
+//     // Loop over queues: high priority (0) → low (2)
+//     for(int q = 0; q < NQUEUES; q++){
+//       printMLFQ();
+
+//       for(p = proc; p < &proc[NPROC]; p++){
+//         if(p->state != RUNNABLE || p->queueLevel != q)
+//           continue;
+
+//         // Run process
+//         c->proc = p;
+//         switchuvm(p);
+//         p->state = RUNNING;
+
+//         // Reset time used for this queue
+//         p->timeSliceUsed = 0;
+//         swtch(&c->scheduler, p->context);
+//         switchkvm();
+
+//         // After returning, check if process needs demotion
+//         if(p->state == RUNNABLE){
+//           p->timeSliceUsed++;
+//           if((p->queueLevel == 0 && p->timeSliceUsed >= TIME_SLICE_0) ||
+//              (p->queueLevel == 1 && p->timeSliceUsed >= TIME_SLICE_1)){
+//             p->queueLevel = p->queueLevel + 1;
+//             if(p->queueLevel > 2)
+//               p->queueLevel = 2;
+//             p->timeSliceUsed = 0;
+//           }
+//         }
+
+//         // Process completed or blocked → reset CPU
+//         c->proc = 0;
+//       }
+//     }
+
+//     // Aging: promote long-waiting processes
+//     for(p = proc; p < &proc[NPROC]; p++){
+//       if(p->state == RUNNABLE){
+//         p->waitingTime++;
+//         if(p->waitingTime >= AGING_LIMIT && p->queueLevel > 0){
+//           p->queueLevel--;
+//           p->waitingTime = 0;
+//         }
+//       }
+//     }
+//   }
+// }
+
 void
 scheduler(void)
 {
   struct proc *p;
   struct cpu *c = mycpu();
-
   c->proc = 0;
+
   for(;;){
-    // The most recent process to run may have had interrupts
-    // turned off; enable them to avoid a deadlock if all
-    // processes are waiting. Then turn them back off
-    // to avoid a possible race between an interrupt
-    // and wfi.
     intr_on();
-    intr_off();
 
-    int found = 0;
-    for(p = proc; p < &proc[NPROC]; p++) {
+    for(p = proc; p < &proc[NPROC]; p++){
       acquire(&p->lock);
-      if(p->state == RUNNABLE) {
-        // Switch to chosen process.  It is the process's job
-        // to release its lock and then reacquire it
-        // before jumping back to us.
-        p->state = RUNNING;
-        c->proc = p;
-        swtch(&c->context, &p->context);
-
-        // Process is done running for now.
-        // It should have changed its p->state before coming back.
-        c->proc = 0;
-        found = 1;
+      if(p->state != RUNNABLE){
+        release(&p->lock);
+        continue;
       }
+
+      // Record start tick and mark running while holding p->lock
+      p->lastStartTick = ticks;
+      p->state = RUNNING;
+      c->proc = p;
+
+      // Print START message (holding p->lock is OK here)
+      printf("%s process started. PID = %d\n", p->name[0] ? p->name : "user", p->pid);
+      printf("CPUBEGIN ticks = %d\n", ticks);
+
+      // switch to the process (lock stays held across swtch as in xv6)
+      swtch(&c->context, &p->context);
+
+      // back from process: still holding p->lock
+      // compute elapsed ticks while p->lock still held to avoid races
+      int start = p->lastStartTick;
+      int elapsed = ticks - start;
+
+      // Print END message
+      printf("CPUEND ticks = %d\n", ticks);
+      printf("%s process (PID = %d) completed slice\n", p->name[0] ? p->name : "user", p->pid);
+      printf("Total elapsed ticks = %d\n", elapsed);
+
+      // Clear cpu pointer and release lock (same CPU that acquired)
+      c->proc = 0;
       release(&p->lock);
-    }
-    if(found == 0) {
-      // nothing to run; stop running on this core until an interrupt.
-      asm volatile("wfi");
     }
   }
 }
+
+
 
 // Switch to scheduler.  Must hold only p->lock
 // and have changed proc->state. Saves and restores
@@ -685,3 +819,19 @@ procdump(void)
     printf("\n");
   }
 }
+
+struct procinfo {
+  int pid;
+  int cputime;
+};
+
+// Debug: Print all processes and their queue levels
+void
+printMLFQ(void)
+{
+  for(struct proc *p = proc; p < &proc[NPROC]; p++){
+    if(p->state == RUNNABLE)
+      printf("PID %d in queue %d\n", p->pid, p->queueLevel);
+  }
+}
+

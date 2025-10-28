@@ -7,6 +7,8 @@
 #include "proc.h"
 #include "vm.h"
 
+extern struct proc proc[NPROC];
+
 uint64
 sys_exit(void)
 {
@@ -104,4 +106,44 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+uint64
+sys_sleep(void)
+{
+  int n;
+  uint ticks0;
+
+  argint(0, &n);  // get first argument (ticks)
+  acquire(&tickslock);
+  ticks0 = ticks;
+  while(ticks - ticks0 < n){
+    if(myproc()->killed){
+      release(&tickslock);
+      return -1;
+    }
+    sleep(&ticks, &tickslock);
+  }
+  release(&tickslock);
+  return 0;
+}
+
+uint64
+sys_getprocinfo(void)
+{
+  int pid;
+  argint(0, &pid);   // get the PID argument
+
+  struct proc *p;
+
+  for(p = proc; p < &proc[NPROC]; p++){
+    acquire(&p->lock);
+    if(p->pid == pid){
+      int time = p->cputime;   // or whatever variable you used
+      release(&p->lock);
+      return time;             // return CPU ticks
+    }
+    release(&p->lock);
+  }
+
+  return -1; // process not found
 }

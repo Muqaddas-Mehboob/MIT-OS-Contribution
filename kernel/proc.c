@@ -9,7 +9,7 @@
 
 //for the implementation of MLFQ
 #define NQUEUES 3
-int TIME_SLICE[NQUEUES] = {1, 2, 4};
+int time_slices[NQUEUES] = {1, 2, 4};
 
 #define AGING_THRESHOLD 50
 
@@ -38,6 +38,15 @@ extern char trampoline[]; // trampoline.S
 // memory model when using p->parent.
 // must be acquired before any p->lock.
 struct spinlock wait_lock;
+
+//MLFQ
+int mystrcmp(const char *p, const char *q) {
+  while (*p && *p == *q) {
+    p++;
+    q++;
+  }
+  return (unsigned char)*p - (unsigned char)*q;
+}
 
 // Allocate a page for each process's kernel stack.
 // Map it high in memory, followed by an invalid
@@ -140,12 +149,15 @@ found:
   p->state = USED;
 
   // Initialize your new MLFQ fields here (AFTER p is valid)
-  p->queueLevel = 0;
+  p->queue_level = 0;
   p->timeSliceUsed = 0;
   p->waitingTime = 0;
   p->lastQueueLevel = -1;
   p->lastStartTick = -1;
   p->lastLoggedQueue = -1;
+  p->queue = 0;
+  p->ticks = 0;
+
 
 
   // Allocate a trapframe page
@@ -545,52 +557,130 @@ kwait(uint64 addr)
 //   }
 // }
 
+// int last_second = 0;
+// int printed = 0;
+
+// void
+// scheduler(void)
+// {
+//   struct cpu *c = mycpu();
+//   c->proc = 0;
+
+//   for(;;){
+//     // Enable interrupts on this processor.
+//     intr_on();
+
+//     for(struct proc *p = proc; p < &proc[NPROC]; p++){
+//       acquire(&p->lock);
+//       if(p->state == RUNNABLE){
+//         // Switch to chosen process.
+//         p->state = RUNNING;
+//         c->proc = p;
+
+//         // Optional fields for logging (define in struct proc if not already)
+//         p->ticks++;       // uncomment if you have a ticks field
+//         p->queue = 0;     // or set based on your scheduler logic
+
+//         if (p->pid > 2)
+//           printf("PID=%d | queue=%d | state=%d | ticks=%d\n", p->pid, p->queue, p->state, p->ticks);
+
+
+//         swtch(&c->context, &p->context);
+
+//         // Process is done running for now.
+//         c->proc = 0;
+//       }
+//       release(&p->lock);
+//     }
+//   }
+// }
+
 void
 scheduler(void)
 {
   struct proc *p;
   struct cpu *c = mycpu();
+  
   c->proc = 0;
-
+  
   for(;;){
     intr_on();
 
-    for(p = proc; p < &proc[NPROC]; p++){
-      acquire(&p->lock);
-      if(p->state != RUNNABLE){
+    // Priority boost (keep your existing code)
+    static uint64 last_boost = 0;
+    uint64 current_ticks = ticks;
+    if(current_ticks - last_boost > BOOST_TIME) {
+      printf("scheduler: Priority boost at tick %d\n", ticks);
+      for(p = proc; p < &proc[NPROC]; p++) {
+        acquire(&p->lock);
+        if(p->state == RUNNABLE) {
+          p->queue_level = 0;
+          p->time_slice = time_slices[p->queue_level];// Fixed calculation
+          p->boost_eligible = 0;
+        }
         release(&p->lock);
-        continue;
       }
+      last_boost = current_ticks;
+    }
+    
+    int found = 0;
+    
+    // MLFQ: Search from highest to lowest priority queue
+    for(int queue = 0; queue < NQUEUE; queue++) {
+      for(p = proc; p < &proc[NPROC]; p++) {
+        acquire(&p->lock);
+        if(p->state == RUNNABLE && p->queue_level == queue) {
+          found = 1;
+          
+          // Update performance tracking
+          p->times_scheduled++;
+          p->last_scheduled_tick = ticks;
+          
+          // Switch to chosen process
+          p->state = RUNNING;
+          c->proc = p;
+          
+          #ifdef DEBUG
+          printf("scheduler: Running pid %d from queue %d, time_slice %d\n", 
+                 p->pid, p->queue_level, p->time_slice);
+          #endif
+          
+          swtch(&c->context, &p->context);
 
-      // Record start tick and mark running while holding p->lock
-      p->lastStartTick = ticks;
-      p->state = RUNNING;
-      c->proc = p;
-
-      // Print START message (holding p->lock is OK here)
-      printf("%s process started. PID = %d\n", p->name[0] ? p->name : "user", p->pid);
-      printf("CPUBEGIN ticks = %d\n", ticks);
-
-      // switch to the process (lock stays held across swtch as in xv6)
-      swtch(&c->context, &p->context);
-
-      // back from process: still holding p->lock
-      // compute elapsed ticks while p->lock still held to avoid races
-      int start = p->lastStartTick;
-      int elapsed = ticks - start;
-
-      // Print END message
-      printf("CPUEND ticks = %d\n", ticks);
-      printf("%s process (PID = %d) completed slice\n", p->name[0] ? p->name : "user", p->pid);
-      printf("Total elapsed ticks = %d\n", elapsed);
-
-      // Clear cpu pointer and release lock (same CPU that acquired)
-      c->proc = 0;
-      release(&p->lock);
+          // MLFQ CRITICAL: Handle queue adjustment after process runs
+          if(p->state == RUNNABLE) {
+            // Process used its entire time slice - demote it
+            if(p->time_slice <= 0) {
+              if(p->queue_level < NQUEUE - 1) {
+                p->queue_level++;  // Move to lower priority queue
+              }
+              // Reset time slice for the new queue level
+              p->time_slice = time_slices[p->queue_level];
+            }
+          } else {
+            // Process gave up CPU (I/O) - promote or maintain priority
+            if(p->queue_level > 0) {
+              p->queue_level--;  // Move to higher priority queue
+            }
+            p->time_slice = time_slices[p->queue_level];
+          }
+          
+          // Process is done running for now
+          c->proc = 0;
+          
+          release(&p->lock);
+          break;
+        }
+        release(&p->lock);
+      }
+      if(found) break;
+    }
+    
+    if(!found) {
+      asm volatile("wfi");
     }
   }
 }
-
 
 
 // Switch to scheduler.  Must hold only p->lock
@@ -831,7 +921,6 @@ printMLFQ(void)
 {
   for(struct proc *p = proc; p < &proc[NPROC]; p++){
     if(p->state == RUNNABLE)
-      printf("PID %d in queue %d\n", p->pid, p->queueLevel);
+      printf("PID %d in queue %d\n", p->pid, p->queue_level);
   }
 }
-

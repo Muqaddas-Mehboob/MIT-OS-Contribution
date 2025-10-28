@@ -16,12 +16,15 @@ main(void)
 {
   int pid, wpid;
 
+
   if(open("console", O_RDWR) < 0){
     mknod("console", CONSOLE, 0);
     open("console", O_RDWR);
   }
   dup(0);  // stdout
   dup(0);  // stderr
+
+
 
   for(;;){
     printf("init: starting sh\n");
@@ -35,6 +38,20 @@ main(void)
       printf("init: exec sh failed\n");
       exit(1);
     }
+      // --- Parent: shell started, now start CPU-bound and I/O-bound as background ---
+    if(fork() == 0){
+        // CPU-bound process
+        exec("cpubound", 0);
+        exit(1);
+    }
+
+    if(fork() == 0){
+        // I/O-bound process
+        exec("iobound", 0);
+        exit(1);
+    }
+    // ------------------------------------------------------------------------------
+
 
     for(;;){
       // this call to wait() returns if the shell exits,

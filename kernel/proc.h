@@ -93,6 +93,12 @@ struct proc {
   int lastStartTick;     // tick when this process was switched in
   int lastLoggedQueue;   // last queue printed (optional)
 
+   // MLFQ fields
+  int queue_level;      // Current queue level (0 = highest priority)
+  int time_slice;       // Remaining time slice in current queue
+  uint64 queue_enter_time; // Time when entered current queue
+  int boost_eligible;   // Whether process is eligible for priority boost
+
 
   // p->lock must be held when using these:
   enum procstate state;        // Process state
@@ -100,6 +106,15 @@ struct proc {
   int killed;                  // If non-zero, have been killed
   int xstate;                  // Exit status to be returned to parent's wait
   int pid;                     // Process ID
+
+  // Add these new fields for performance tracking
+  int creation_time;         // Tick count when process was created
+  int total_cpu_ticks;       // Total ticks this process has run
+  int times_scheduled;       // Number of times process was scheduled
+  int last_scheduled_tick;   // Last time process was scheduled
+
+  int queue;   // For MLFQ queue level tracking
+  int ticks;   // For counting CPU time in current queue
   int cputime;
   // wait_lock must be held when using this:
   struct proc *parent;         // Parent process
@@ -114,3 +129,7 @@ struct proc {
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
 };
+// MLFQ constants
+#define NQUEUE      5        // Number of queues (0 highest, 4 lowest)
+#define BASE_TIME_SLICE  5        // Base time slice
+#define BOOST_TIME  100     // Time after which all processes get priority boost

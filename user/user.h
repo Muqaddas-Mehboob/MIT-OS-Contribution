@@ -1,6 +1,13 @@
 #define SBRK_ERROR ((char *)-1)
 
 struct stat;
+struct procinfo {
+  int cputime;
+  int creation_time;
+  int total_cpu_ticks;
+  int times_scheduled;
+};
+
 
 // system calls
 int fork(void);
@@ -40,7 +47,7 @@ void *memcpy(void *, const void *, uint);
 char* sbrk(int);
 char* sbrklazy(int);
 int sleep(int);
-int getprocinfo(int pid);
+int getprocinfo(int pid, struct procinfo *info);
 
 
 // printf.c

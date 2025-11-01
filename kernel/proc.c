@@ -8,8 +8,8 @@
 
 
 //for the implementation of MLFQ
-#define NQUEUES 3
-int time_slices[NQUEUES] = {1, 2, 4};
+#define NQUEUE 3
+int time_slices[NQUEUE] = {1, 2, 4};
 
 #define AGING_THRESHOLD 50
 
@@ -18,6 +18,7 @@ int time_slices[NQUEUES] = {1, 2, 4};
 #define TIME_SLICE_2 16
 #define AGING_LIMIT 30  // Move process up after waiting too long
 
+// extern uint64 ticks;
 
 struct cpu cpus[NCPU];
 
@@ -157,6 +158,10 @@ found:
   p->lastLoggedQueue = -1;
   p->queue = 0;
   p->ticks = 0;
+  p->creation_time = ticks;
+  p->total_cpu_ticks = 0;
+  p->times_scheduled = 0;
+  p->cputime = 0;
 
 
 
@@ -498,104 +503,210 @@ kwait(uint64 addr)
 
 
 //IMPLEMENTATION OF MLFQ
+// void
+// scheduler(void)
+// {
+//     struct proc *p;
+//     struct cpu *c = mycpu();
+//     c->proc = 0;
+
+//     static uint64 last_boost = 0;
+
+//     // ✅ Initialize boost timer to start when scheduler starts, not at boot
+//     if (last_boost == 0)
+//         last_boost = ticks;
+
+//     for (;;) {
+//         intr_on();
+
+//         uint64 current_ticks = ticks;
+//         int boosted = 0;
+
+//         // ==========================================================
+//         //                MLFQ Priority Boost Section
+//         // ==========================================================
+//         if ((current_ticks - last_boost) >= BOOST_TIME) {
+//             for (p = proc; p < &proc[NPROC]; p++) {
+//                 acquire(&p->lock);
+//                 if (p->state == RUNNABLE && p->pid > 4) {  // skip init/shell
+//                     p->queue_level = 0;  // Move back to top queue
+//                     p->time_slice = time_slices[p->queue_level];
+//                     boosted++;
+//                 }
+//                 release(&p->lock);
+//             }
+
+//             if (boosted > 0)
+//                 printf("\n[MLFQ] Boosted %d process(es) to top queue at tick %d\n",
+//                        boosted, (int)current_ticks);
+
+//             last_boost = current_ticks;  // ✅ Reset timer for next boost
+//         }
+
+//         int found = 0;
+
+//         // ==========================================================
+//         //                MLFQ Scheduling Section
+//         // ==========================================================
+//         for (int queue = 0; queue < NQUEUE; queue++) {
+//             for (p = proc; p < &proc[NPROC]; p++) {
+//                 acquire(&p->lock);
+
+//                 if (p->state == RUNNABLE && p->queue_level == queue) {
+//                     found = 1;
+//                     p->ticks++;
+//                     p->cputime++;
+//                     p->times_scheduled++;
+//                     p->last_scheduled_tick = ticks;
+//                     p->state = RUNNING;
+//                     c->proc = p;
+
+//                     #ifdef DEBUG
+//                     printf("[MLFQ] Running PID %d from Queue %d (slice=%d)\n",
+//                            p->pid, p->queue_level, p->time_slice);
+//                     #endif
+
+//                     swtch(&c->context, &p->context);
+
+//                     // Process finished or yielded back to RUNNABLE
+//                     if (p->state == RUNNABLE) {
+//                         // Used full time slice → demote if not already lowest
+//                         if (p->time_slice <= 0 && p->queue_level < NQUEUE - 1)
+//                             p->queue_level++;
+//                     } else {
+//                         // Released CPU early (I/O or yield) → promote if not top
+//                         if (p->queue_level > 0)
+//                             p->queue_level--;
+//                     }
+
+//                     // Reset its time slice based on its current queue
+//                     p->time_slice = time_slices[p->queue_level];
+
+//                     c->proc = 0;
+//                     release(&p->lock);
+//                     break;
+//                 }
+
+//                 release(&p->lock);
+//             }
+
+//             if (found)
+//                 break;
+//         }
+
+//         // No process found → idle CPU until interrupt
+//         if (!found)
+//             asm volatile("wfi");
+//     }
+// }
+
+// IMPLEMENTATION OF MLFQ
 void
 scheduler(void)
 {
     struct proc *p;
     struct cpu *c = mycpu();
-    
     c->proc = 0;
 
-    // Static last boost time
     static uint64 last_boost = 0;
 
-    for(;;){
+    // Initialize boost timer when scheduler starts
+    if (last_boost == 0)
+        last_boost = ticks;
+
+    for (;;) {
         intr_on();
 
         uint64 current_ticks = ticks;
-
-        // ------------------------
-        // Priority boost (MLFQ)
-        // ------------------------
         int boosted = 0;
-        if(current_ticks - last_boost > BOOST_TIME) {
-            for(p = proc; p < &proc[NPROC]; p++) {
+
+        // ==========================================================
+        //                MLFQ Priority Boost Section
+        // ==========================================================
+        if ((current_ticks - last_boost) >= BOOST_TIME) {
+            for (p = proc; p < &proc[NPROC]; p++) {
                 acquire(&p->lock);
-
-                // Only boost test processes, skip init/shell
-                if(p->state == RUNNABLE && p->pid > 4){ // Adjust PID threshold as needed
-                    p->queue_level = 0; // Move to highest priority queue
-                    p->time_slice = time_slices[p->queue_level];
-                    p->boost_eligible = 0;
-                    boosted = 1;
+                if (p->pid > 4) {  // skip init/shell
+                    p->queue_level = 0;               // Move back to top queue
+                    p->time_slice = time_slices[0];   // Reset time slice
+                    boosted++;
                 }
-
                 release(&p->lock);
             }
 
-            if(boosted)
-                printf("scheduler: Priority boost at tick %d\n", ticks);
+            if (boosted > 0)
+                printf("\n[MLFQ] Boosted %d process(es) to top queue at tick %d\n",
+                       boosted, (int)current_ticks);
 
-            last_boost = current_ticks;
+            last_boost = current_ticks;  // Reset timer for next boost
         }
 
         int found = 0;
 
-        // ------------------------
-        // MLFQ scheduling
-        // ------------------------
-        for(int queue = 0; queue < NQUEUE; queue++) {
-            for(p = proc; p < &proc[NPROC]; p++) {
+        // ==========================================================
+        //                MLFQ Scheduling Section
+        // ==========================================================
+        for (int queue = 0; queue < NQUEUE; queue++) {
+            for (p = proc; p < &proc[NPROC]; p++) {
                 acquire(&p->lock);
-                if(p->state == RUNNABLE && p->queue_level == queue) {
+
+                if (p->state == RUNNABLE && p->queue_level == queue) {
                     found = 1;
 
-                    // Update performance tracking
+                    // Update process stats
+                    p->ticks++;
+                    p->cputime++;
                     p->times_scheduled++;
                     p->last_scheduled_tick = ticks;
 
-                    // Switch to chosen process
+                    // Set RUNNING
                     p->state = RUNNING;
                     c->proc = p;
 
-                    #ifdef DEBUG
-                    printf("scheduler: Running pid %d from queue %d, time_slice %d\n", 
+                    // Decrement time slice for demotion logic
+                    p->time_slice--;
+
+#ifdef DEBUG
+                    printf("[MLFQ] Running PID %d from Queue %d (slice=%d)\n",
                            p->pid, p->queue_level, p->time_slice);
-                    #endif
+#endif
 
                     swtch(&c->context, &p->context);
 
-                    // ------------------------
-                    // Queue adjustments after process runs
-                    // ------------------------
-                    if(p->state == RUNNABLE) {
-                        // Process used full time slice → demote
-                        if(p->time_slice <= 0) {
-                            if(p->queue_level < NQUEUE - 1)
-                                p->queue_level++;
-                            p->time_slice = time_slices[p->queue_level];
-                        }
+                    // Process finished or yielded back to RUNNABLE
+                    if (p->state == RUNNABLE) {
+                        // Used full time slice → demote if not already lowest
+                        if (p->time_slice <= 0 && p->queue_level < NQUEUE - 1)
+                            p->queue_level++;
                     } else {
-                        // Process gave up CPU (I/O) → promote
-                        if(p->queue_level > 0)
+                        // Released CPU early (I/O or yield) → promote if not top
+                        if (p->queue_level > 0)
                             p->queue_level--;
-                        p->time_slice = time_slices[p->queue_level];
                     }
+
+                    // Reset its time slice based on its current queue
+                    p->time_slice = time_slices[p->queue_level];
 
                     c->proc = 0;
                     release(&p->lock);
                     break;
                 }
+
                 release(&p->lock);
             }
-            if(found) break;
+
+            if (found)
+                break;
         }
 
-        if(!found){
-            asm volatile("wfi"); // Wait for interrupt if nothing is runnable
-        }
+        // No process found → idle CPU until interrupt
+        if (!found)
+            asm volatile("wfi");
     }
 }
+
+
+
 
 
 // Switch to scheduler.  Must hold only p->lock

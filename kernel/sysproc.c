@@ -127,23 +127,39 @@ sys_sleep(void)
   return 0;
 }
 
+struct procinfo {
+  int cputime;
+  int creation_time;
+  int total_cpu_ticks;
+  int times_scheduled;
+};
+
 uint64
 sys_getprocinfo(void)
 {
   int pid;
-  argint(0, &pid);   // get the PID argument
+  uint64 addr;
+  struct procinfo info;
+
+  argint(0, &pid);
+  argaddr(1, &addr);
 
   struct proc *p;
-
   for(p = proc; p < &proc[NPROC]; p++){
     acquire(&p->lock);
     if(p->pid == pid){
-      int time = p->cputime;   // or whatever variable you used
+      info.cputime = p->cputime;
+      info.creation_time = p->creation_time;
+      info.total_cpu_ticks = p->total_cpu_ticks;
+      info.times_scheduled = p->times_scheduled;
       release(&p->lock);
-      return time;             // return CPU ticks
+
+      if(copyout(myproc()->pagetable, addr, (char *)&info, sizeof(info)) < 0)
+        return -1;
+      return 0;
     }
     release(&p->lock);
   }
-
-  return -1; // process not found
+  return -1;
 }
+

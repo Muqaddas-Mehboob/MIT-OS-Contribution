@@ -130,6 +130,6 @@ struct proc {
   char name[16];               // Process name (debugging)
 };
 // MLFQ constants
-#define NQUEUE      5        // Number of queues (0 highest, 4 lowest)
+// #define NQUEUE      5        // Number of queues (0 highest, 4 lowest)
 #define BASE_TIME_SLICE  5        // Base time slice
 #define BOOST_TIME  100     // Time after which all processes get priority boost

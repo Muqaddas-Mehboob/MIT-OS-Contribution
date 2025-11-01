@@ -83,9 +83,10 @@ usertrap(void)
   // give up the CPU if this is a timer interrupt.
   if(which_dev == 2){
     struct proc *p = myproc();
-    if(p && p->state == RUNNING)
+    if(p && p->state == RUNNING) {
       p->cputime++;
-    yield();
+      p->total_cpu_ticks++;
+    }
   }
 
   prepare_return();
